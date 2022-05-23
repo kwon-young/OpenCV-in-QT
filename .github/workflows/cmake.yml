@@ -1,0 +1,118 @@
+name: Build And Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  BuildTest:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux_Release
+            flavor: Release
+            runner: ubuntu-18.04
+            generator: Ninja
+            cc: gcc
+            cxx: g++
+            publish: true
+
+          - name: Windows_Release
+            flavor: Release
+            runner: windows-latest
+            generator: Visual Studio 17 2022
+            qtver: 5.15.2
+            qtdir: msvc2019_64
+            qtstr: windows desktop win64_msvc2019_64
+            publish: true
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v2
+
+      #
+      # Setup and Configuration
+      #
+      - name: Linux - Setup
+        if: ${{ startsWith(matrix.runner, 'ubuntu') }}
+        run: |
+          sudo apt-get install -y ninja-build qt5-default libopencv-dev
+          sudo apt-get update -y
+      - name: Windows - Setup
+        if: ${{ startsWith(matrix.runner, 'windows') }}
+        env:
+          QT_DIR: ${{ github.workspace }}\${{ matrix.qtver }}\${{ matrix.qtdir }}
+        run: |
+          New-Item -Path .\build -Name "build" -ItemType "directory"
+          Invoke-WebRequest https://github.com/neovim/neovim/releases/download/nightly/nvim-win64.zip -OutFile nvim-win64.zip
+          Expand-Archive -Path nvim-win64.zip -DestinationPath .\build\
+          Add-Content -Path $env:GITHUB_PATH -Value ${{ github.workspace }}\build\nvim-win64\bin\
+          Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_PREFIX_PATH=$env:QT_DIR;$env:QT_DIR\lib\cmake"
+          Add-Content -Path $env:GITHUB_PATH -Value "${{ env.qt_dir }}"
+          Add-Content -Path $env:GITHUB_PATH -Value "${{ env.qt_dir }}\bin"
+      - name: Qt Cache Restore
+        if: ${{ matrix.qtver }}
+        id: cache-qt
+        uses: actions/cache@v2
+        with:
+          path: ${{ matrix.qtver }}\${{ matrix.qtdir }}
+          key: qt-${{ runner.os }}-${{ matrix.qtver }}-${{ matrix.qtdir }}
+
+      - name: Qt Cache Install
+        if: ${{ matrix.qtver && steps.cache-qt.outputs.cache-hit != 'true' }}
+        run: |
+          pip install aqtinstall
+          python -m aqt install ${{ matrix.qtver }} ${{ matrix.qtstr }}
+      #
+      # Build and Test
+      #
+      - name: Neovim Version
+        run: nvim --version
+
+      - name: Configure
+        env:
+          CMAKE_BUILD_TYPE: ${{ matrix.flavor }}
+          CMAKE_GENERATOR: ${{ matrix.generator }}
+        run: >
+          cmake -B ./build
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+      - name: Build
+        run: cmake --build ${{ github.workspace }}/build
+
+      #
+      # Deploy Release Binaries
+      #
+      - name: Linux - Publish Release Build
+        if: ${{ matrix.publish && startsWith(matrix.runner, 'ubuntu') }}
+        env:
+          ARCH: x86_64
+        run: |
+          cmake --build ./build --target install
+          wget -c -nv "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage"
+          chmod a+x linuxdeployqt-continuous-x86_64.AppImage
+          ./linuxdeployqt-continuous-x86_64.AppImage ./install/share/applications/nvim-qt.desktop -appimage
+      - name: Windows - Publish Release Build
+        if: ${{ matrix.publish && startsWith(matrix.runner, 'windows') }}
+        run: |
+          cmake --build ./build --target install
+          Push-Location ${{ github.workspace }}/build
+          cpack --verbose -G WIX
+          Pop-Location
+          Compress-Archive -Path ./install -DestinationPath neovim-qt.zip
+          Move-Item -Path ./build/neovim-qt-installer.msi -Destination neovim-qt-installer.msi
+      - name: Upload Artifacts
+        if: ${{ matrix.publish }}
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ matrix.name }}
+          if-no-files-found: ignore
+          path: |
+            Neovim-Qt-*-x86_64.AppImage
+            neovim-qt-installer.msi
+            neovim-qt.zip
