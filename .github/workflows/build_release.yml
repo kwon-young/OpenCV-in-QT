@@ -67,11 +67,12 @@ jobs:
         run: |
           pip install aqtinstall
           python -m aqt install ${{ matrix.qtver }} ${{ matrix.qtstr }}
+      - uses: Dovyski/setup-opencv-action@v1
+        with:
+          opencv-version: '4.0.0'
       #
       # Build and Test
       #
-      - name: Neovim Version
-        run: nvim --version
 
       - name: Configure
         env:
